@@ -29,6 +29,8 @@ int main() {
     u = mallocFieldsOnDevice<Real>(NXG, NYG);
     v = mallocFieldsOnDevice<Real>(NXG, NYG);
     p = mallocFieldsOnDevice<Real>(NXG, NYG);
+    u_star = mallocFieldsOnDevice<Real>(NXG, NYG);
+    v_star = mallocFieldsOnDevice<Real>(NXG, NYG);
     u_old = mallocFieldsOnDevice<Real>(NXG, NYG);
     v_old = mallocFieldsOnDevice<Real>(NXG, NYG);
     p_old = mallocFieldsOnDevice<Real>(NXG, NYG);
@@ -39,10 +41,6 @@ int main() {
 
     rhs_p = mallocFieldsOnDevice<Real>(NXG, NYG);
     delta_p = mallocFieldsOnDevice<Real>(NXG, NYG);
-
-    u_out = new Real[NX * NY];
-    v_out = new Real[NX * NY];
-    p_out = new Real[NX * NY];
 
     init<<<grid, threads>>>(u, v, p);
     checkErr(cudaGetLastError());
@@ -62,10 +60,10 @@ int main() {
         cudaMemcpy(u_old, u, NXG * NYG * sizeof(Real), cudaMemcpyDeviceToDevice);
         cudaMemcpy(v_old, v, NXG * NYG * sizeof(Real), cudaMemcpyDeviceToDevice);
         cudaMemcpy(p_old, p, NXG * NYG * sizeof(Real), cudaMemcpyDeviceToDevice);
-        compute_single_step();
-        compute_single_step();
+        compute_single_step(u, v, p, fu, fv, gu, gv, u_star, v_star, rhs_p, delta_p);
+        compute_single_step(u, v, p, fu, fv, gu, gv, u_star, v_star, rhs_p, delta_p);
         compute_substep2_val<<<grid, threads>>>(u, v, p, u_old, v_old, p_old);
-        compute_single_step();
+        compute_single_step(u, v, p, fu, fv, gu, gv, u_star, v_star, rhs_p, delta_p);
         compute_substep3_val<<<grid, threads>>>(u, v, p, u_old, v_old, p_old);
 
         cudaDeviceSynchronize();

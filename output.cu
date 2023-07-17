@@ -1,15 +1,19 @@
 #include "output.h"
 #include "cnpy/cnpy.h"
 
+Real p_out[NX][NY];
+Real u_out[NX][NY];
+Real v_out[NX][NY];
 
-void save_npz(int step) {
+
+
+void save_npz(Real *u_h, Real *v_h, Real *p_h, int step) {
     for (int i = 0; i < NX; i++) {
         for (int j = 0; j < NY; j++) {
-            int id = j * NX + i;
-            int idg = (K_WENO + j) * NXG + K_WENO + i;
-            u_out[id] = u_h[idg];
-            v_out[id] = v_h[idg];
-            p_out[id] = p_h[idg];
+            int id = (K_WENO + j) * NXG + K_WENO + i;
+            u_out[i][j] = u_h[id];
+            v_out[i][j] = v_h[id];
+            p_out[i][j] = p_h[id];
         }
     }
     char fName[50];
@@ -19,9 +23,9 @@ void save_npz(int step) {
     strcpy(fName, ss.str().c_str());
     strcat(fName, ".npz");
 
-    cnpy::npz_save(fName, "U", u_out, {NX, NY}, "a");
-    cnpy::npz_save(fName, "V", v_out, {NX, NY}, "a");
-    cnpy::npz_save(fName, "P", p_out, {NX, NY}, "a");
+    cnpy::npz_save(fName, "U", &(u_out[0][0]), {NX, NY}, "a");
+    cnpy::npz_save(fName, "V", &(v_out[0][0]), {NX, NY}, "a");
+    cnpy::npz_save(fName, "P", &(p_out[0][0]), {NX, NY}, "a");
 
 }
 
@@ -165,7 +169,7 @@ void save_vtk(Real *u, Real *v, Real *p, int step) {/*
 
 void save(Real *u, Real *v, Real *p, int step) {
     save_vtk(u, v, p, step);
-    save_npz(step);
+    save_npz(u, v, p, step);
 }
 
 

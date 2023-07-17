@@ -24,7 +24,6 @@ void compute_fluxes(Real *u, Real *v, Real *p, Real *fu, Real *fv, Real *gu, Rea
         RECONSTR(u_, ul, ur);
         RECONSTR(v_, vl, vr);
 
-        Real qu, qv;
         if (0.5*(u[idxm]+u[idxp]) > 0.) {
             fu[idx] = ul*ul;
             fv[idx] = ul*vl;
@@ -50,7 +49,6 @@ void compute_fluxes(Real *u, Real *v, Real *p, Real *fu, Real *fv, Real *gu, Rea
         RECONSTR(u_, ul, ur);
         RECONSTR(v_, vl, vr);
 
-        Real qu, qv;
         if (0.5*(v[idxm]+v[idxp]) > 0.) {
             gu[idx] = ul*vl;
             gv[idx] = vl*vl;

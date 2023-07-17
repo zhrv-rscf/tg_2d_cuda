@@ -130,8 +130,7 @@ void compute_velosity(Real *u, Real *v, Real *u_star, Real *v_star, Real *p) {
 }
 
 
-void compute_single_step() {
-
+void compute_single_step(Real *u, Real *v, Real *p, Real *fu, Real *fv, Real *gu, Real *gv, Real *u_star, Real *v_star, Real *rhs_p, Real *delta_p) {
     compute_fluxes<<<grid, threads>>>(u, v, p, fu, fv, gu, gv); checkErr(cudaGetLastError());
     compute_star_velosity<<<grid, threads>>>(u, v, p, u_star, v_star, fu, fv, gu, gv); checkErr(cudaGetLastError());
     fill_boundary<<<grid, threads>>>(u_star); checkErr(cudaGetLastError());
