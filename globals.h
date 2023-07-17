@@ -86,9 +86,9 @@ static dim3 grid(NX / threads.x + 1, NY / threads.y + 1);
 static Real *u, *v, *p, *u_star, *v_star, *fu, *fv, *gu, *gv, *rhs_p, *delta_p, *u_old, *v_old, *p_old;
 static Real *u_h, *v_h, *p_h;
 
-static Real p_out[NX][NY];
-static Real u_out[NX][NY];
-static Real v_out[NX][NY];
+static Real *p_out;
+static Real *u_out;
+static Real *v_out;
 
 
 #endif //RSCF_TG_2D_CUDA_GLOBALS_H

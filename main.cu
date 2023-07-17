@@ -40,8 +40,9 @@ int main() {
     rhs_p = mallocFieldsOnDevice<Real>(NXG, NYG);
     delta_p = mallocFieldsOnDevice<Real>(NXG, NYG);
 
-//    gradx = mallocFieldsOnDevice(NXG,   NYG);
-//    grady = mallocFieldsOnDevice(NXG,   NYG);
+    u_out = new Real[NX * NY];
+    v_out = new Real[NX * NY];
+    p_out = new Real[NX * NY];
 
     init<<<grid, threads>>>(u, v, p);
     checkErr(cudaGetLastError());

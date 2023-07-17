@@ -5,10 +5,11 @@
 void save_npz(int step) {
     for (int i = 0; i < NX; i++) {
         for (int j = 0; j < NY; j++) {
-            int idx = (K_WENO + j) * NXG + K_WENO + i;
-            u_out[i][j] = u_h[idx];
-            v_out[i][j] = v_h[idx];
-            p_out[i][j] = p_h[idx];
+            int id = j * NX + i;
+            int idg = (K_WENO + j) * NXG + K_WENO + i;
+            u_out[id] = u_h[idg];
+            v_out[id] = v_h[idg];
+            p_out[id] = p_h[idg];
         }
     }
     char fName[50];
@@ -18,9 +19,9 @@ void save_npz(int step) {
     strcpy(fName, ss.str().c_str());
     strcat(fName, ".npz");
 
-    cnpy::npz_save(fName, "U", &(u_out[0][0]), {NX, NY}, "a");
-    cnpy::npz_save(fName, "V", &(v_out[0][0]), {NX, NY}, "a");
-    cnpy::npz_save(fName, "P", &(p_out[0][0]), {NX, NY}, "a");
+    cnpy::npz_save(fName, "U", u_out, {NX, NY}, "a");
+    cnpy::npz_save(fName, "V", v_out, {NX, NY}, "a");
+    cnpy::npz_save(fName, "P", p_out, {NX, NY}, "a");
 
 }
 

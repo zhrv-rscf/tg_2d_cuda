@@ -42,7 +42,6 @@ void compute_p_rhs(Real *u_star, Real *v_star, Real *rhs_p) {
     int j = blockDim.y * blockIdx.y + threadIdx.y;
     Real dx[] = {(DHI_X - DLO_X) / NX, (DHI_Y - DLO_Y) / NY};
     if (i <= NX and j < NY) {
-        int idx = j * (NX + 1) + i;
         int idxm = (K_WENO + j) * NXG + K_WENO + i - 1;
         int idxp = (K_WENO + j) * NXG + K_WENO + i;
         Real u_[2 * K_WENO];
@@ -52,7 +51,7 @@ void compute_p_rhs(Real *u_star, Real *v_star, Real *rhs_p) {
             int pidx = (K_WENO + j) * NXG + K_WENO + i - 1 + p;
             u_[p + K_WENO - 1] = u_star[pidx];
         }
-        Real ul, vl, ur, vr;
+        Real ul, ur;
 
         RECONSTR(u_, ul, ur);
         Real fu = 0.5*(ul+ur)/dx[0]/DT;
@@ -61,7 +60,6 @@ void compute_p_rhs(Real *u_star, Real *v_star, Real *rhs_p) {
         rhs_p[idxm] += fu;
     }
     if (i < NX and j <= NY) {
-        int idx = j * NX + i;
         int idxm = (K_WENO + j - 1) * NXG + K_WENO + i;
         int idxp = (K_WENO + j) * NXG + K_WENO + i;
         Real v_[2 * K_WENO];
@@ -86,7 +84,6 @@ void compute_delta_p(Real *p, Real *delta_p, Real *rhs_p) {
     int i = blockDim.x * blockIdx.x + threadIdx.x;
     int j = blockDim.y * blockIdx.y + threadIdx.y;
     if (i < NX and j < NY) {
-        Real Re = L * V0 * R0 / MU;
         Real dx[] = {(DHI_X - DLO_X) / NX, (DHI_Y - DLO_Y) / NY};
         int id = (K_WENO + j) * NXG + K_WENO + i;
         int idxp = (K_WENO + j) * NXG + K_WENO + i + 1;
@@ -120,7 +117,6 @@ void compute_velosity(Real *u, Real *v, Real *u_star, Real *v_star, Real *p) {
     int i = blockDim.x * blockIdx.x + threadIdx.x;
     int j = blockDim.y * blockIdx.y + threadIdx.y;
     if (i < NX and j < NY) {
-        Real Re = L * V0 * R0 / MU;
         Real dx[] = {(DHI_X - DLO_X) / NX, (DHI_Y - DLO_Y) / NY};
         int id = (K_WENO + j) * NXG + K_WENO + i;
         int idxm = (K_WENO + j) * NXG + K_WENO + i - 1;
