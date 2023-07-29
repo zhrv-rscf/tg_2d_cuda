@@ -1,3 +1,4 @@
+//%%file tg2d.cu
 #include "cnpy/cnpy.h"
 #include <cstdlib>
 #include <iostream>
@@ -36,11 +37,12 @@ typedef int Int;
 #define V0 1.0
 #define MU 0.01
 #define MU_L 0.0
+#define NU 0.01
 
 #define GAM  1.4
 #define K_WENO  3
-#define NX  100
-#define NY  100
+#define NX  400
+#define NY  400
 #define NXG (NX+2*K_WENO)
 #define NYG (NY+2*K_WENO)
 #define DLO_X 0.0
@@ -65,6 +67,11 @@ Real prim_r[NX][NY];
 Real prim_u[NX][NY];
 Real prim_v[NX][NY];
 Real prim_p[NX][NY];
+Real prim_e[NX][NY];
+
+Real exact_u[NX][NY];
+Real exact_v[NX][NY];
+Real exact_p[NX][NY];
 
 struct vec_t {
     Real x;
@@ -78,11 +85,7 @@ struct cons_t {
     Real re;
 };
 
-struct prim_t {
-    Real r, u, v, p;
-};
 
-prim_t prim[NX][NY];
 __forceinline__ void _checkErr(cudaError cuda_err, int _line, std::string _file) {
     if (cuda_err != cudaSuccess) {
         printf("ERROR (file: %s, line: %d): %s \n",
@@ -94,24 +97,23 @@ __forceinline__ void _checkErr(cudaError cuda_err, int _line, std::string _file)
 #define checkErr(f) _checkErr( f, __LINE__, __FILE__)
 
 
-__host__
-cons_t *mallocFieldsOnDevice(int nx, int ny) {
-    cons_t *c;
+
+template<typename T>
+T *mallocOnDevice(int nx, int ny) {
+    T *c;
     cudaError_t result;
-    result = cudaMalloc(&c, sizeof(cons_t) * nx * ny);
+    result = cudaMalloc(&c, sizeof(T) * nx * ny);
     checkErr(result);
     return c;
 }
 
 
-__host__
-vec_t *mallocVectorsOnDevice(int nx, int ny) {
-    vec_t *c;
-    cudaError_t result;
-    result = cudaMalloc(&c, sizeof(vec_t) * nx * ny);
-    checkErr(result);
-    return c;
+
+template<typename T>
+T *mallocOnHost(int nx, int ny) {
+    return new T[nx*ny];
 }
+
 
 
 
@@ -123,7 +125,8 @@ struct data_t {
     } d;
     struct {
         cons_t *cons;
-        Real *x, *y;
+        vec_t *x;
+        Real *p_exact, *u_exact, *v_exact;
     } h;
     struct {
         Int step;
@@ -133,7 +136,27 @@ struct data_t {
         Real hx_pow2, hy_pow2;
     } g;
 
+    data_t() {
+        alloc();
+        init_g();
+    }
+
     void alloc() {
+        h.cons = mallocOnHost<cons_t>(NXG, NYG);
+        h.x = mallocOnHost<vec_t>(NXG, NYG);
+
+        h.p_exact = mallocOnHost<Real>(NXG, NYG);
+        h.u_exact = mallocOnHost<Real>(NXG, NYG);
+        h.v_exact = mallocOnHost<Real>(NXG, NYG);
+
+        d.cons = mallocOnDevice<cons_t>(NXG, NYG);
+        d.cons_old = mallocOnDevice<cons_t>(NXG, NYG);
+        d.fluxx = mallocOnDevice<cons_t>(NX + 1, NY);
+        d.fluxy = mallocOnDevice<cons_t>(NX, NY + 1);
+
+        d.grad_u = mallocOnDevice<vec_t>(NXG, NYG);
+        d.grad_v = mallocOnDevice<vec_t>(NXG, NYG);
+        d.x = mallocOnDevice<vec_t>(NXG, NYG);
 
     }
 
@@ -149,23 +172,34 @@ struct data_t {
     }
 
     void copy_to_host() {
+        cudaMemcpy(h.cons, d.cons, NXG * NYG * sizeof(cons_t), cudaMemcpyDeviceToHost);
+    }
 
+    void copy_coord_to_host() {
+        cudaMemcpy(h.x, d.x, NXG * NYG * sizeof(vec_t), cudaMemcpyDeviceToHost);
     }
 
     void copy_to_old() {
-
+        cudaMemcpy(d.cons_old, d.cons, NXG * NYG * sizeof(cons_t), cudaMemcpyDeviceToDevice);
     }
 
 };
 
 
 __device__
+Int get_id(Int i, Int j) {
+
+}
+
+__device__
 Real sign(Real x) {
     if (x < 0.) {
         return -1.;
-    } else if (x > 0.) {
+    }
+    else if (x > 0.) {
         return 1.;
-    } else {
+    }
+    else {
         return 0.;
     }
 }
@@ -327,113 +361,113 @@ void WENO5(Real *u, Real &ul, Real &ur) {
 __device__
 void calc_flux_hllc(
         Real rl, Real pl, Real ul, Real vl, Real wl,
-        Real rr, Real pr, Real ur, Real vr, Real wr,
+Real rr, Real pr, Real ur, Real vr, Real wr,
         Real &qr, Real &qu, Real &qv, Real &qw, Real &qe) {
-    Real sl, sr, p_star, s_star, p_pvrs, _ql, _qr, tmp, e_tot_l, e_tot_r, czl, czr;
+Real sl, sr, p_star, s_star, p_pvrs, _ql, _qr, tmp, e_tot_l, e_tot_r, czl, czr;
 
-    e_tot_l = pl / rl / (GAM - 1.) + 0.5 * (ul * ul + vl * vl + wl * wl);
-    e_tot_r = pr / rr / (GAM - 1.) + 0.5 * (ur * ur + vr * vr + wr * wr);
+e_tot_l = pl / rl / (GAM - 1.) + 0.5 * (ul * ul + vl * vl + wl * wl);
+e_tot_r = pr / rr / (GAM - 1.) + 0.5 * (ur * ur + vr * vr + wr * wr);
 
-    czl = sqrt(GAM * pl / rl);
-    czr = sqrt(GAM * pr / rr);
+czl = sqrt(GAM * pl / rl);
+czr = sqrt(GAM * pr / rr);
 
-    p_pvrs = 0.5 * (pl + pr) - 0.5 * (ur - ul) * 0.25 * (rl + rr) * (czl + czr);
-    p_star = (p_pvrs > 0.) ? p_pvrs : 0.;
+p_pvrs = 0.5 * (pl + pr) - 0.5 * (ur - ul) * 0.25 * (rl + rr) * (czl + czr);
+p_star = (p_pvrs > 0.) ? p_pvrs : 0.;
 
-    _ql = (p_star <= pl) ? 1 : sqrt(1. + (GAM + 1.) * (p_star / pl - 1.) / (2. * GAM));
-    _qr = (p_star <= pr) ? 1 : sqrt(1. + (GAM + 1.) * (p_star / pr - 1.) / (2. * GAM));
+_ql = (p_star <= pl) ? 1 : sqrt(1. + (GAM + 1.) * (p_star / pl - 1.) / (2. * GAM));
+_qr = (p_star <= pr) ? 1 : sqrt(1. + (GAM + 1.) * (p_star / pr - 1.) / (2. * GAM));
 
-    sl = ul - czl * _ql;
-    sr = ur + czr * _qr;
+sl = ul - czl * _ql;
+sr = ur + czr * _qr;
 
-    if (sl > sr) {
-        tmp = sl;
-        sl = sr;
-        sr = tmp;
-    }
+if (sl > sr) {
+tmp = sl;
+sl = sr;
+sr = tmp;
+}
 
-    s_star = pr - pl;
-    s_star += rl * ul * (sl - ul);
-    s_star -= rr * ur * (sr - ur);
-    s_star /= (rl * (sl - ul) - rr * (sr - ur));
+s_star = pr - pl;
+s_star += rl * ul * (sl - ul);
+s_star -= rr * ur * (sr - ur);
+s_star /= (rl * (sl - ul) - rr * (sr - ur));
 
-    if (s_star < sl) s_star = sl;
-    if (s_star > sr) s_star = sr;
+if (s_star < sl) s_star = sl;
+if (s_star > sr) s_star = sr;
 
 
-    if (!((sl <= s_star) && (s_star <= sr))) {
+if (!((sl <= s_star) && (s_star <= sr))) {
 //        amrex::Print() << "HLLC: inequality SL <= S* <= SR is FALSE." << "\n";
 //        abort();
-        return;
-    }
+return;
+}
 
-    if (sl >= 0.) {
-        qr = rl * ul;
-        qu = rl * ul * ul + pl;
-        qv = rl * vl * ul;
-        qw = rl * wl * ul;
-        qe = (rl * e_tot_l + pl) * ul;
-    } else if (sr <= 0.) {
-        qr = rr * ur;
-        qu = rr * ur * ur + pr;
-        qv = rr * vr * ur;
-        qw = rr * wr * ur;
-        qe = (rr * e_tot_r + pr) * ur;
-    } else {
-        if (s_star >= 0) {
-            qr = F_HLLC_V( /*  UK, FK, SK, SS, PK, RK, VK */
-                    rl,
-                    rl * ul,
-                    sl, s_star, pl, rl, ul
-            );
-            qu = F_HLLC_U( /*  UK, FK, SK, SS, PK, RK, VK */
-                    rl * ul,
-                    rl * ul * ul + pl,
-                    sl, s_star, pl, rl, ul
-            );
-            qv = F_HLLC_V( /*  UK, FK, SK, SS, PK, RK, VK */
-                    rl * vl,
-                    rl * ul * vl,
-                    sl, s_star, pl, rl, ul
-            );
-            qw = F_HLLC_V( /*  UK, FK, SK, SS, PK, RK, VK */
-                    rl * wl,
-                    rl * ul * wl,
-                    sl, s_star, pl, rl, ul
-            );
-            qe = F_HLLC_E( /*  UK, FK, SK, SS, PK, RK, VK */
-                    rl * e_tot_l,
-                    (rl * e_tot_l + pl) * ul,
-                    sl, s_star, pl, rl, ul
-            );
-        } else {
-            qr = F_HLLC_V( /*  UK, FK, SK, SS, PK, RK, VK */
-                    rr,
-                    rr * ur,
-                    sr, s_star, pr, rr, ur
-            );
-            qu = F_HLLC_U( /*  UK, FK, SK, SS, PK, RK, VK */
-                    rr * ur,
-                    rr * ur * ur + pr,
-                    sr, s_star, pr, rr, ur
-            );
-            qv = F_HLLC_V( /*  UK, FK, SK, SS, PK, RK, VK */
-                    rr * vr,
-                    rr * ur * vr,
-                    sr, s_star, pr, rr, ur
-            );
-            qw = F_HLLC_V( /*  UK, FK, SK, SS, PK, RK, VK */
-                    rr * wr,
-                    rr * ur * wr,
-                    sr, s_star, pr, rr, ur
-            );
-            qe = F_HLLC_E( /*  UK, FK, SK, SS, PK, RK, VK */
-                    rr * e_tot_r,
-                    (rr * e_tot_r + pr) * ur,
-                    sr, s_star, pr, rr, ur
-            );
-        }
-    }
+if (sl >= 0.) {
+qr = rl * ul;
+qu = rl * ul * ul + pl;
+qv = rl * vl * ul;
+qw = rl * wl * ul;
+qe = (rl * e_tot_l + pl) * ul;
+} else if (sr <= 0.) {
+qr = rr * ur;
+qu = rr * ur * ur + pr;
+qv = rr * vr * ur;
+qw = rr * wr * ur;
+qe = (rr * e_tot_r + pr) * ur;
+} else {
+if (s_star >= 0) {
+qr = F_HLLC_V( /*  UK, FK, SK, SS, PK, RK, VK */
+        rl,
+        rl * ul,
+        sl, s_star, pl, rl, ul
+);
+qu = F_HLLC_U( /*  UK, FK, SK, SS, PK, RK, VK */
+        rl * ul,
+        rl * ul * ul + pl,
+        sl, s_star, pl, rl, ul
+);
+qv = F_HLLC_V( /*  UK, FK, SK, SS, PK, RK, VK */
+        rl * vl,
+        rl * ul * vl,
+        sl, s_star, pl, rl, ul
+);
+qw = F_HLLC_V( /*  UK, FK, SK, SS, PK, RK, VK */
+        rl * wl,
+        rl * ul * wl,
+        sl, s_star, pl, rl, ul
+);
+qe = F_HLLC_E( /*  UK, FK, SK, SS, PK, RK, VK */
+        rl * e_tot_l,
+        (rl * e_tot_l + pl) * ul,
+        sl, s_star, pl, rl, ul
+);
+} else {
+qr = F_HLLC_V( /*  UK, FK, SK, SS, PK, RK, VK */
+        rr,
+        rr * ur,
+        sr, s_star, pr, rr, ur
+);
+qu = F_HLLC_U( /*  UK, FK, SK, SS, PK, RK, VK */
+        rr * ur,
+        rr * ur * ur + pr,
+        sr, s_star, pr, rr, ur
+);
+qv = F_HLLC_V( /*  UK, FK, SK, SS, PK, RK, VK */
+        rr * vr,
+        rr * ur * vr,
+        sr, s_star, pr, rr, ur
+);
+qw = F_HLLC_V( /*  UK, FK, SK, SS, PK, RK, VK */
+        rr * wr,
+        rr * ur * wr,
+        sr, s_star, pr, rr, ur
+);
+qe = F_HLLC_E( /*  UK, FK, SK, SS, PK, RK, VK */
+        rr * e_tot_r,
+        (rr * e_tot_r + pr) * ur,
+        sr, s_star, pr, rr, ur
+);
+}
+}
 }
 
 
@@ -442,18 +476,17 @@ void compute_grad(data_t d) {
     int i = blockDim.x * blockIdx.x + threadIdx.x;
     int j = blockDim.y * blockIdx.y + threadIdx.y;
     if (i < NXG and j < NYG) {
-        Real dx[] = {2. * (DHI_X - DLO_X) / NX, 2. * (DHI_Y - DLO_Y) / NY};
         int id = j * NXG + i;
         int idxp = j * NXG + i + 1;
         int idxm = j * NXG + i - 1;
         int idyp = (j + 1) * NXG + i;
         int idym = (j - 1) * NXG + i;
 
-        d.d.grad_u[id].x = (d.d.cons[idxp].ru / d.d.cons[idxp].ro - d.d.cons[idxm].ru / d.d.cons[idxm].ro) / dx[0];
-        d.d.grad_v[id].x = (d.d.cons[idxp].rv / d.d.cons[idxp].ro - d.d.cons[idxm].rv / d.d.cons[idxm].ro) / dx[0];
+        d.d.grad_u[id].x = (d.d.cons[idxp].ru / d.d.cons[idxp].ro - d.d.cons[idxm].ru / d.d.cons[idxm].ro) / d.g.hx2;
+        d.d.grad_v[id].x = (d.d.cons[idxp].rv / d.d.cons[idxp].ro - d.d.cons[idxm].rv / d.d.cons[idxm].ro) / d.g.hx2;
 
-        d.d.grad_u[id].y = (d.d.cons[idyp].ru / d.d.cons[idyp].ro - d.d.cons[idym].ru / d.d.cons[idym].ro) / dx[1];
-        d.d.grad_v[id].y = (d.d.cons[idyp].rv / d.d.cons[idyp].ro - d.d.cons[idym].rv / d.d.cons[idym].ro) / dx[1];
+        d.d.grad_u[id].y = (d.d.cons[idyp].ru / d.d.cons[idyp].ro - d.d.cons[idym].ru / d.d.cons[idym].ro) / d.g.hy2;
+        d.d.grad_v[id].y = (d.d.cons[idyp].rv / d.d.cons[idyp].ro - d.d.cons[idym].rv / d.d.cons[idym].ro) / d.g.hy2;
     }
 }
 
@@ -563,7 +596,6 @@ void compute_new_val(data_t d) {
     int i = blockDim.x * blockIdx.x + threadIdx.x;
     int j = blockDim.y * blockIdx.y + threadIdx.y;
     if (i < NX and j < NY) {
-        Real dx[] = {(DHI_X - DLO_X) / NX, (DHI_Y - DLO_Y) / NY};
         int id = (K_WENO + j) * NXG + K_WENO + i;
         int idxp = j * (NX + 1) + i + 1;
         int idxm = j * (NX + 1) + i;
@@ -572,39 +604,33 @@ void compute_new_val(data_t d) {
 
         // convective fluxes
         d.d.cons[id].ro -= DT * (
-                (d.d.fluxx[idxp].ro - d.d.fluxx[idxm].ro) / dx[0] +
-                (d.d.fluxy[idyp].ro - d.d.fluxy[idym].ro) / dx[1]
+                (d.d.fluxx[idxp].ro - d.d.fluxx[idxm].ro) / d.g.hx +
+                (d.d.fluxy[idyp].ro - d.d.fluxy[idym].ro) / d.g.hy
         );
         d.d.cons[id].ru -= DT * (
-                (d.d.fluxx[idxp].ru - d.d.fluxx[idxm].ru) / dx[0] +
-                (d.d.fluxy[idyp].ru - d.d.fluxy[idym].ru) / dx[1]
+                (d.d.fluxx[idxp].ru - d.d.fluxx[idxm].ru) / d.g.hx +
+                (d.d.fluxy[idyp].ru - d.d.fluxy[idym].ru) / d.g.hy
         );
         d.d.cons[id].rv -= DT * (
-                (d.d.fluxx[idxp].rv - d.d.fluxx[idxm].rv) / dx[0] +
-                (d.d.fluxy[idyp].rv - d.d.fluxy[idym].rv) / dx[1]
+                (d.d.fluxx[idxp].rv - d.d.fluxx[idxm].rv) / d.g.hx +
+                (d.d.fluxy[idyp].rv - d.d.fluxy[idym].rv) / d.g.hy
         );
         d.d.cons[id].re -= DT * (
-                (d.d.fluxx[idxp].re - d.d.fluxx[idxm].re) / dx[0] +
-                (d.d.fluxy[idyp].re - d.d.fluxy[idym].re) / dx[1]
+                (d.d.fluxx[idxp].re - d.d.fluxx[idxm].re) / d.g.hx +
+                (d.d.fluxy[idyp].re - d.d.fluxy[idym].re) / d.g.hy
         );
 
     }
 }
 
 
-void compute_single_step(cons_t *cons_d, cons_t *fluxx, cons_t *fluxy, vec_t *grad_u, vec_t *grad_v) {
-    fill_boundary<<<grid, threads>>>(cons_d);
-    checkErr(cudaGetLastError());
-    compute_grad<<<grid, threads>>>(grad_u, grad_v, cons_d);
-    checkErr(cudaGetLastError());
-    fill_boundary<<<grid, threads>>>(grad_u);
-    checkErr(cudaGetLastError());
-    fill_boundary<<<grid, threads>>>(grad_v);
-    checkErr(cudaGetLastError());
-    compute_fluxes<<<grid, threads>>>(fluxx, fluxy, cons_d, grad_u, grad_v);
-    checkErr(cudaGetLastError());
-    compute_new_val<<<grid, threads>>>(cons_d, fluxx, fluxy);
-    checkErr(cudaGetLastError());
+void compute_single_step(data_t d) {
+    fill_boundary<<<grid, threads>>>(d.d.cons); checkErr(cudaGetLastError());
+    compute_grad<<<grid, threads>>>(d); checkErr(cudaGetLastError());
+    fill_boundary<<<grid, threads>>>(d.d.grad_u); checkErr(cudaGetLastError());
+    fill_boundary<<<grid, threads>>>(d.d.grad_v); checkErr(cudaGetLastError());
+    compute_fluxes<<<grid, threads>>>(d); checkErr(cudaGetLastError());
+    compute_new_val<<<grid, threads>>>(d); checkErr(cudaGetLastError());
 }
 
 __global__
@@ -653,23 +679,40 @@ void compute_substep3_val(data_t d) {
 }
 
 
-void save_npz(cons_t *cons, int step) {
+void compute_prim(data_t d) {
+    d.copy_to_host();
     for (int i = 0; i < NX; i++) {
         for (int j = 0; j < NY; j++) {
             int idx = (K_WENO + j) * NXG + K_WENO + i;
-            prim_r[i][j] = cons[idx].ro;
-            prim_u[i][j] = cons[idx].ru / cons[idx].ro;
-            prim_v[i][j] = cons[idx].rv / cons[idx].ro;
-            prim_p[i][j] = (GAM - 1.) * (
-                    cons[idx].re - 0.5 * prim_r[i][j] * (
-                            prim_u[i][j] * prim_u[i][j] + prim_v[i][j] * prim_v[i][j]
-                    )
+            prim_r[i][j] = d.h.cons[idx].ro;
+            prim_u[i][j] = d.h.cons[idx].ru / d.h.cons[idx].ro;
+            prim_v[i][j] = d.h.cons[idx].rv / d.h.cons[idx].ro;
+            prim_e[i][j] = d.h.cons[idx].re / prim_r[i][j] - 0.5 * (
+                    prim_u[i][j] * prim_u[i][j] + prim_v[i][j] * prim_v[i][j]
             );
+            prim_p[i][j] = (GAM - 1.) * prim_r[i][j] * prim_e[i][j];
         }
     }
+
+}
+
+
+void compute_exact(data_t d) {
+    for (int i = 0; i < NX; i++) {
+        for (int j = 0; j < NY; j++) {
+            int idx = (K_WENO + j) * NXG + K_WENO + i;
+            exact_u[i][j] = cos(d.h.x[idx].x) * sin(d.h.x[idx].y)*exp(-2.*NU*d.g.t);
+            exact_v[i][j] = -sin(d.h.x[idx].x) * cos(d.h.x[idx].y)*exp(-2.*NU*d.g.t);
+            exact_p[i][j] = (1. - 0.25 * R0 * (cos(2. * d.h.x[idx].x) + cos(2. * d.h.x[idx].y)))*exp(-4.*NU*d.g.t);
+        }
+    }
+
+}
+
+void save_npz(data_t d) {
     char fName[50];
     std::stringstream ss;
-    ss << "res_" << std::setfill('0') << std::setw(10) << step;
+    ss << "res_" << std::setfill('0') << std::setw(10) << d.g.step;
 
     strcpy(fName, ss.str().c_str());
     strcat(fName, ".npz");
@@ -678,12 +721,14 @@ void save_npz(cons_t *cons, int step) {
     cnpy::npz_save(fName, "U", &(prim_u[0][0]), {NX, NY}, "a");
     cnpy::npz_save(fName, "V", &(prim_v[0][0]), {NX, NY}, "a");
     cnpy::npz_save(fName, "P", &(prim_p[0][0]), {NX, NY}, "a");
+    cnpy::npz_save(fName, "E", &(prim_e[0][0]), {NX, NY}, "a");
 
+    cnpy::npz_save(fName, "U_exact", &(exact_u[0][0]), {NX, NY}, "a");
+    cnpy::npz_save(fName, "V_exact", &(exact_v[0][0]), {NX, NY}, "a");
+    cnpy::npz_save(fName, "P_exact", &(exact_p[0][0]), {NX, NY}, "a");
 }
 
-
 void save_vtk(data_t d) {
-    Real dx[] = {(DHI_X - DLO_X) / NX, (DHI_Y - DLO_Y) / NY};
     char fName[50];
     std::stringstream ss;
     ss << "res_" << std::setfill('0') << std::setw(10) << d.g.step;
@@ -701,7 +746,7 @@ void save_vtk(data_t d) {
 
     for (int j = 0; j <= NY; j++) {
         for (int i = 0; i <= NX; i++) {
-            fprintf(fp, "%f %f %f  \n", DLO_X + dx[0] * i, DLO_Y + dx[1] * j, 0.);
+            fprintf(fp, "%f %f %f  \n", DLO_X + d.g.hx * i, DLO_Y + d.g.hy * j, 0.);
         }
     }
     fprintf(fp, "\n");
@@ -726,8 +771,7 @@ void save_vtk(data_t d) {
     fprintf(fp, "SCALARS Density float 1\nLOOKUP_TABLE default\n");
     for (int i = 0; i < NX; i++) {
         for (int j = 0; j < NY; j++) {
-            int id = (K_WENO + j) * NXG + K_WENO + i;
-            fprintf(fp, "%f ", cons[id].ro);
+            fprintf(fp, "%f ", prim_r[i][j]);
             fprintf(fp, "\n");
         }
     }
@@ -735,82 +779,26 @@ void save_vtk(data_t d) {
     fprintf(fp, "SCALARS Pressure float 1\nLOOKUP_TABLE default\n");
     for (int i = 0; i < NX; i++) {
         for (int j = 0; j < NY; j++) {
-            int id = (K_WENO + j) * NXG + K_WENO + i;
-            Real u = cons[id].ru / cons[id].ro;
-            Real v = cons[id].rv / cons[id].ro;
-            Real p = (cons[id].re - cons[id].ro * (u * u + v * v)) * (GAM - 1.);
-            fprintf(fp, "%f ", p);
+            fprintf(fp, "%f ", prim_p[i][j]);
         }
         fprintf(fp, "\n");
     }
-
-//    fprintf(fp, "SCALARS Pressure_exact float 1\nLOOKUP_TABLE default\n");
-//    for (int i = lo[0]; i <= hi[0]; i++)
-//    {
-//        for (int j = lo[1]; j <= hi[1]; j++)
-//        {
-//            fprintf(fp, "%f ", p_exact[i][j]);
-//        }
-//        fprintf(fp, "\n");
-//    }
-//
-//    fprintf(fp, "SCALARS Pressure_err float 1\nLOOKUP_TABLE default\n");
-//    for (int i = lo[0]; i <= hi[0]; i++)
-//    {
-//        for (int j = lo[1]; j <= hi[1]; j++)
-//        {
-//            fprintf(fp, "%f ", fabs(p[i][j]-p_exact[i][j]));
-//        }
-//        fprintf(fp, "\n");
-//    }
 
     fprintf(fp, "SCALARS Energy float 1\nLOOKUP_TABLE default\n");
     for (int i = 0; i < NX; i++) {
         for (int j = 0; j < NY; j++) {
-            int id = (K_WENO + j) * NXG + K_WENO + i;
-            fprintf(fp, "%f ", cons[id].re / cons[id].ro);
+            fprintf(fp, "%f ", prim_e[i][j]);
         }
         fprintf(fp, "\n");
     }
-
-//    fprintf(fp, "SCALARS Mach_number float 1\nLOOKUP_TABLE default\n");
-//    for (int i = lo[0]; i <= hi[0]; i++)
-//    {
-//        for (int j = lo[1]; j <= hi[1]; j++)
-//        {
-//            fprintf(fp, "%f ", sqrt((u[i][j]*u[i][j]+v[i][j]*v[i][j])/(GAM*p[i][j]/r[i][j]))  );
-//        }
-//        fprintf(fp, "\n");
-//    }
 
     fprintf(fp, "VECTORS Velosity float\n");
     for (int i = 0; i < NX; i++) {
         for (int j = 0; j < NY; j++) {
-            int id = (K_WENO + j) * NXG + K_WENO + i;
-            fprintf(fp, "%f %f %f  ", cons[id].ru / cons[id].ro, cons[id].rv / cons[id].ro, 0.0);
+            fprintf(fp, "%f %f %f  ", prim_u[i][j], prim_v[i][j], 0.0);
         }
         fprintf(fp, "\n");
     }
-
-//    fprintf(fp, "VECTORS Velosity_exact float\n");
-//    for (int i = lo[0]; i <= hi[0]; i++)
-//    {
-//        for (int j = lo[1]; j <= hi[1]; j++)
-//        {
-//            fprintf(fp, "%f %f %f  ", u_exact[i][j], v_exact[i][j], 0.0);
-//        }
-//        fprintf(fp, "\n");
-//    }
-
-//    fprintf(fp, "VECTORS Velosity_err float\n");
-//    for (int i = lo[0]; i <= hi[0]; i++)
-//    {
-//        for (int j = lo[1]; j <= hi[1]; j++)
-//        {
-//            fprintf(fp, "%f %f %f  ", fabs(u[i][j]-u_exact[i][j]), fabs(v[i][j]-v_exact[i][j]), 0.0);
-//        }
-//        fprintf(fp, "\n");
-//    }
 
     fclose(fp);
     printf("File '%s' saved...\n", fName);
@@ -819,65 +807,53 @@ void save_vtk(data_t d) {
 }
 
 
-void save(cons_t *cons, int step) {
-    save_vtk(cons, step);
-    save_npz(cons, step);
+void save(data_t d) {
+    compute_prim(d);
+    compute_exact(d);
+    //save_vtk(d);
+    save_npz(d);
 }
 
 
 int main() {
 //    cudaError_t result;
-    cons_h = new cons_t[NXG * NYG];
-    cons_d = mallocFieldsOnDevice(NXG, NYG);
-    cons_d_old = mallocFieldsOnDevice(NXG, NYG);
-    fluxx = mallocFieldsOnDevice(NX + 1, NY);
-    fluxy = mallocFieldsOnDevice(NX, NY + 1);
 
-//    gradx = mallocFieldsOnDevice(NXG,   NYG);
-//    grady = mallocFieldsOnDevice(NXG,   NYG);
+    data_t data;
 
-    grad_u = mallocVectorsOnDevice(NXG, NYG);
-    grad_v = mallocVectorsOnDevice(NXG, NYG);
+    init<<<grid, threads>>>(data); checkErr(cudaGetLastError());
+    data.copy_coord_to_host();
 
-    init<<<grid, threads>>>(cons_d);
-    checkErr(cudaGetLastError());
+    save(data);
 
-    cudaMemcpy(cons_h, cons_d, sizeof(cons_t) * NXG * NYG, cudaMemcpyDeviceToHost);
-    save(cons_h, 0);
+    data.g.t = 0.;
+    data.g.step = 0;
 
-    double t = 0.;
-    int step = 0;
     time_t begin, end;
     time(&begin);
-    while (t < MAX_TIME) {
-        t += DT;
-        ++step;
-        cudaMemcpy(cons_d_old, cons_d, NXG * NYG * sizeof(cons_t), cudaMemcpyDeviceToDevice);
-        compute_single_step(cons_d, fluxx, fluxy, grad_u, grad_v);
-        checkErr(cudaGetLastError());
-        compute_single_step(cons_d, fluxx, fluxy, grad_u, grad_v);
-        checkErr(cudaGetLastError());
-        compute_substep2_val<<<grid, threads>>>(cons_d, cons_d_old);
-        compute_single_step(cons_d, fluxx, fluxy, grad_u, grad_v);
-        checkErr(cudaGetLastError());
-        compute_substep3_val<<<grid, threads>>>(cons_d, cons_d_old);
+    while (data.g.t < MAX_TIME) {
+        data.g.t += DT;
+        ++data.g.step;
+        data.copy_to_old();
+        compute_single_step(data);        checkErr(cudaGetLastError());
+        compute_single_step(data);        checkErr(cudaGetLastError());
+        compute_substep2_val<<<grid, threads>>>(data);
+        compute_single_step(data);        checkErr(cudaGetLastError());
+        compute_substep3_val<<<grid, threads>>>(data);
 
         cudaDeviceSynchronize();
 
-        if (step % LOG_STEP == 0) {
+        if (data.g.step % LOG_STEP == 0) {
             time(&end);
             time_t elapsed = end - begin;
-            printf("%d: Time measured for %d steps: %ld seconds.\n", LOG_STEP, step, elapsed);
+            printf("%d: Time elapsed for %d steps: %ld seconds.\n", data.g.step, LOG_STEP, elapsed);
             time(&begin);
         }
-        if (step % SAVE_STEP == 0) {
-            cudaMemcpy(cons_h, cons_d, NXG * NYG * sizeof(cons_t), cudaMemcpyDeviceToHost);
-            save(cons_h, step);
+        if (data.g.step % SAVE_STEP == 0) {
+            save(data);
         }
     }
 
-    cudaMemcpy(cons_h, cons_d, NXG * NYG * sizeof(cons_t), cudaMemcpyDeviceToHost);
-    save(cons_h, step);
+    save(data);
 
     return 0;
 }
