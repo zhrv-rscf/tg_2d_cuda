@@ -5,7 +5,7 @@ set(CMAKE_CUDA_STANDARD 14)
 
 add_subdirectory(cnpy)
 
-add_executable(rscf_tg_2d_cuda main.cu)
+add_executable(rscf_tg_2d_cuda tg_2d_proj.cu)
 
 target_link_libraries(rscf_tg_2d_cuda z cnpy)
 
