@@ -1,4 +1,3 @@
-//%%file tg2d.cu
 #include "cnpy/cnpy.h"
 #include <cstdlib>
 #include <iostream>
@@ -241,6 +240,19 @@ struct data_t {
         g.hx_pow2 = g.hx * g.hx;
         g.hy_pow2 = g.hy * g.hy;
     }
+
+    void calc_exact() {
+        for (Int _i = 0; _i < NX; _i++) {
+            for (Int _j = 0; _j < NY; _j++) {
+                Int i = K_WENO+_i;
+                Int j = K_WENO+_j;
+                h.u_exact[i][j] =  cos(h.x[i][j].x) * sin(h.x[i][j].x) * exp(-2. * NU * g.t);
+                h.v_exact[i][j] = -sin(h.x[i][j].x) * cos(h.x[i][j].x) * exp(-2. * NU * g.t);
+                h.p_exact[i][j] = -0.25 * (cos(2. * h.x[i][j].x) + cos(2. * h.x[i][j].x)) * exp(-4. * NU * g.t);
+            }
+        }
+    }
+
 
     void copy_to_host() {
         copy_device_to_host(h.cons, d.cons, NXG, NYG);
@@ -537,6 +549,52 @@ void calc_flux_hllc(
 
 
 __global__
+void compute_grad_fluxes(data_t d) {
+    int _i = get_i();
+    int _j = get_j();
+    if (_i <= NX and _j < NY) {
+        int i = K_WENO+_i;
+        int j = K_WENO+_j;
+        Real u_[2 * K_WENO], v_[2 * K_WENO];
+
+
+        for (int p = -K_WENO + 1; p <= K_WENO; p++) {
+            u_[p + K_WENO - 1] = d.d.cons[i - 1 + p][j].ru / d.d.cons[i - 1 + p][j].ro;
+            v_[p + K_WENO - 1] = d.d.cons[i - 1 + p][j].rv / d.d.cons[i - 1 + p][j].ro;
+        }
+        Real ul, vl;
+        Real ur, vr;
+
+        RECONSTR(u_, ul, ur);
+        RECONSTR(v_, vl, vr);
+
+        d.d.fluxx[_i][_j].ru = 0.5*(ul+ur);
+        d.d.fluxx[_i][_j].rv = 0.5*(vl+vr);
+
+    }
+    if (_i < NX and _j <= NY) {
+        int i = K_WENO+_i;
+        int j = K_WENO+_j;
+
+        Real u_[2 * K_WENO], v_[2 * K_WENO];
+
+        for (int p = -K_WENO + 1; p <= K_WENO; p++) {
+            u_[p + K_WENO - 1] = d.d.cons[i][j - 1 + p].ru / d.d.cons[i][j - 1 + p].ro;
+            v_[p + K_WENO - 1] = d.d.cons[i][j - 1 + p].rv / d.d.cons[i][j - 1 + p].ro;
+        }
+        Real ul, vl;
+        Real ur, vr;
+
+        RECONSTR(u_, ul, ur);
+        RECONSTR(v_, vl, vr);
+
+        d.d.fluxy[_i][_j].ru = 0.5*(ul+ur);
+        d.d.fluxy[_i][_j].rv = 0.5*(vl+vr);
+    }
+}
+
+
+__global__
 void compute_grad(data_t d) {
     int _i = get_i();
     int _j = get_j();
@@ -544,11 +602,11 @@ void compute_grad(data_t d) {
         int i = K_WENO+_i;
         int j = K_WENO+_j;
 
-        d.d.grad_u[i][j].x = (d.d.cons[i+1][j].ru / d.d.cons[i+1][j].ro - d.d.cons[i-1][j].ru / d.d.cons[i-1][j].ro) / d.g.hx2;
-        d.d.grad_v[i][j].x = (d.d.cons[i+1][j].rv / d.d.cons[i+1][j].ro - d.d.cons[i-1][j].rv / d.d.cons[i-1][j].ro) / d.g.hx2;
+        d.d.grad_u[i][j].x = (d.d.fluxx[_i+1][j].ru - d.d.fluxx[_i][_j].ru) / d.g.hx;
+        d.d.grad_v[i][j].x = (d.d.fluxx[_i+1][j].rv - d.d.fluxx[_i][_j].rv) / d.g.hx;
 
-        d.d.grad_u[i][j].y = (d.d.cons[i][j+1].ru / d.d.cons[i][j+1].ro - d.d.cons[i][j-1].ru / d.d.cons[i][j-1].ro) / d.g.hy2;
-        d.d.grad_v[i][j].y = (d.d.cons[i][j+1].rv / d.d.cons[i][j+1].ro - d.d.cons[i][j-1].rv / d.d.cons[i][j-1].ro) / d.g.hy2;
+        d.d.grad_u[i][j].y = (d.d.fluxy[_i][_j+1].ru - d.d.fluxy[_i][_j].ru) / d.g.hy;
+        d.d.grad_v[i][j].y = (d.d.fluxy[_i][_j+1].rv - d.d.fluxy[_i][_j].rv) / d.g.hy;
     }
 }
 
@@ -684,6 +742,8 @@ void compute_new_val(data_t d) {
 
 void compute_single_step(data_t d) {
     fill_boundary<<<grid, threads>>>(d.d.cons);
+    checkErr(cudaGetLastError());
+    compute_grad_fluxes<<<grid, threads>>>(d);
     checkErr(cudaGetLastError());
     compute_grad<<<grid, threads>>>(d);
     checkErr(cudaGetLastError());
@@ -902,7 +962,7 @@ int main() {
     time(&begin);
     while (data.g.t < MAX_TIME) {
         data.g.t += DT;
-        ++data.g.step;
+        data.g.step++;
         data.copy_to_old();
         compute_single_step(data);
         checkErr(cudaGetLastError());
@@ -925,6 +985,53 @@ int main() {
             save(data);
         }
     }
+
+    compute_exact(data);
+    data.copy_to_host();
+
+    Real u_err_l1 = 0.;
+    Real v_err_l1 = 0.;
+    Real p_err_l1 = 0.;
+    Real u_err_l2 = 0.;
+    Real v_err_l2 = 0.;
+    Real p_err_l2 = 0.;
+
+    for (Int _i = 0; _i < NX-1; _i++) {
+        for (Int _j = 0; _j < NY-1; _j++) {
+            Int i = K_WENO + _i;
+            Int j = K_WENO + _j;
+            Real r_, u_, v_, p_;
+            r_ = data.h.cons[i][j].ro;
+            u_ = data.h.cons[i][j].ru / r_;
+            v_ = data.h.cons[i][j].rv / r_;
+            p_ = (GAM - 1.) * (data.h.cons[i][j].re - 0.5 * r_ * (u_ * u_ + v_ * v_));
+            u_err_l1 += fabs(u_-exact_u[_i][_j]);
+            v_err_l1 += fabs(v_-exact_v[_i][_j]);
+            p_err_l1 += fabs(p_-exact_p[_i][_j]);
+            u_err_l2 += (u_-exact_u[_i][_j])*(u_-exact_u[_i][_j]);
+            v_err_l2 += (v_-exact_v[_i][_j])*(v_-exact_v[_i][_j]);
+            p_err_l2 += (p_-exact_p[_i][_j])*(p_-exact_p[_i][_j]);
+        }
+    }
+    u_err_l1 *= data.g.hx*data.g.hy;
+    v_err_l1 *= data.g.hx*data.g.hy;
+    p_err_l1 *= data.g.hx*data.g.hy;
+
+    u_err_l2 *= data.g.hx*data.g.hy;
+    v_err_l2 *= data.g.hx*data.g.hy;
+    p_err_l2 *= data.g.hx*data.g.hy;
+
+    u_err_l2 = sqrt(u_err_l2);
+    v_err_l2 = sqrt(v_err_l2);
+    p_err_l2 = sqrt(p_err_l2);
+
+    std::cout << "N = " << NX << std::endl;
+    std::cout << "||u_err||_L1 = " << u_err_l1 << std::endl;
+    std::cout << "||v_err||_L1 = " << v_err_l1 << std::endl;
+    std::cout << "||p_err||_L1 = " << p_err_l1 << std::endl;
+    std::cout << "||u_err||_L2 = " << u_err_l2 << std::endl;
+    std::cout << "||v_err||_L2 = " << v_err_l2 << std::endl;
+    std::cout << "||p_err||_L2 = " << p_err_l2 << std::endl;
 
     save(data);
 
