@@ -186,10 +186,10 @@ struct data_t {
 };
 
 
-__device__
-Int get_id(Int i, Int j) {
-
-}
+//__device__
+//Int get_id(Int i, Int j) {
+//
+//}
 
 __device__
 Real sign(Real x) {
@@ -854,6 +854,52 @@ int main() {
     }
 
     save(data);
+
+
+
+    Real u_err_l1 = 0.;
+    Real v_err_l1 = 0.;
+    Real p_err_l1 = 0.;
+    Real u_err_l2 = 0.;
+    Real v_err_l2 = 0.;
+    Real p_err_l2 = 0.;
+
+    for (Int i = 0; i < NX - 1; i++) {
+        for (Int j = 0; j < NY - 1; j++) {
+            int idx = (K_WENO + j) * NXG + K_WENO + i;
+            Real r_, u_, v_, p_;
+            r_ = data.h.cons[idx].ro;
+            u_ = data.h.cons[idx].ru / r_;
+            v_ = data.h.cons[idx].rv / r_;
+            p_ = (GAM - 1.) * (data.h.cons[idx].re - 0.5 * r_ * (u_ * u_ + v_ * v_));
+            u_err_l1 += fabs(u_-exact_u[i][j]);
+            v_err_l1 += fabs(v_-exact_v[i][j]);
+            p_err_l1 += fabs(p_-exact_p[i][j]);
+            u_err_l2 += (u_-exact_u[i][j]) * (u_ - exact_u[i][j]);
+            v_err_l2 += (v_-exact_v[i][j]) * (v_ - exact_v[i][j]);
+            p_err_l2 += (p_-exact_p[i][j]) * (p_ - exact_p[i][j]);
+        }
+    }
+    u_err_l1 *= data.g.hx*data.g.hy;
+    v_err_l1 *= data.g.hx*data.g.hy;
+    p_err_l1 *= data.g.hx*data.g.hy;
+
+    u_err_l2 *= data.g.hx*data.g.hy;
+    v_err_l2 *= data.g.hx*data.g.hy;
+    p_err_l2 *= data.g.hx*data.g.hy;
+
+    u_err_l2 = sqrt(u_err_l2);
+    v_err_l2 = sqrt(v_err_l2);
+    p_err_l2 = sqrt(p_err_l2);
+
+    std::cout << "N = " << NX << std::endl;
+    std::cout << "||u_err||_L1 = " << u_err_l1 << std::endl;
+    std::cout << "||v_err||_L1 = " << v_err_l1 << std::endl;
+    std::cout << "||p_err||_L1 = " << p_err_l1 << std::endl;
+    std::cout << "||u_err||_L2 = " << u_err_l2 << std::endl;
+    std::cout << "||v_err||_L2 = " << v_err_l2 << std::endl;
+    std::cout << "||p_err||_L2 = " << p_err_l2 << std::endl;
+
 
     return 0;
 }
