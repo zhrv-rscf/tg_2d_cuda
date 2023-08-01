@@ -1,7 +1,4 @@
-%%
-file tg2d
-.
-cu
+//%%file tg2d.cu
 
 #include "cnpy/cnpy.h"
 #include <cstdlib>
@@ -117,6 +114,23 @@ T *mallocOnHost(int nx, int ny) {
 }
 
 
+__device__
+Int get_i() {
+    return blockDim.x * blockIdx.x + threadIdx.x;
+}
+
+__device__
+Int get_j() {
+    return blockDim.y * blockIdx.y + threadIdx.y;
+}
+
+
+__device__
+Int get_id(Int i, Int j) {
+    int idx = (K_WENO + j) * NXG + K_WENO + i;
+}
+
+
 struct data_t {
     struct {
         cons_t *cons, *cons_old, *fluxx, *fluxy;
@@ -193,45 +207,44 @@ struct data_t {
 
 __device__
 Real sign(Real
-x) {
-if (x < 0.) {
-return -1.;
-}
-else if (x > 0.) {
-return 1.;
-}
-else {
-return 0.;
-}
+          x) {
+    if (x < 0.) {
+        return -1.;
+    } else if (x > 0.) {
+        return 1.;
+    } else {
+        return 0.;
+    }
 }
 
 
 __device__
 Real minmod(Real
-x,
-Real y
+            x,
+            Real y
 ) {
-if (
-sign(x)
-!=
-sign(y)
-) return 0.;
-return
-sign(x)
-* (
-fabs(x)
-<
-fabs(y)
-?
-fabs(x)
-:
-fabs(y)
-);
+    if (
+            sign(x)
+            !=
+            sign(y)
+            )
+        return 0.;
+    return
+            sign(x)
+            * (
+                    fabs(x)
+                    <
+                    fabs(y)
+                    ?
+                    fabs(x)
+                    :
+                    fabs(y)
+            );
 }
 
 
 __device__
-void CONST(Real * u, Real & ul, Real & ur) {
+void CONST(Real *u, Real &ul, Real &ur) {
     ul = u[K_WENO - 1];
     ur = u[K_WENO];
 }
@@ -328,14 +341,14 @@ void fill_boundary(vec_t *vec) {
 
 
 __device__
-void TVD2(Real * u, Real & ul, Real & ur) {
+void TVD2(Real *u, Real &ul, Real &ur) {
     ul = u[K_WENO - 1] + 0.5 * minmod(u[K_WENO - 1] - u[K_WENO - 2], u[3] - u[K_WENO - 1]);
     ur = u[3] - 0.5 * minmod(u[K_WENO] - u[K_WENO - 1], u[K_WENO + 1] - u[K_WENO]);
 }
 
 
 __device__
-void WENO5(Real * u, Real & ul, Real & ur) {
+void WENO5(Real *u, Real &ul, Real &ur) {
     Real beta[3];
     Real alpha[3];
     Real eps = 1.0e-6;
@@ -377,139 +390,117 @@ void WENO5(Real * u, Real & ul, Real & ur) {
 #define F_HLLC_E(UK, FK, SK, SS, PK, RK, VK) (((SS)*((SK)*(UK)-(FK)) + (SK)*( (PK)+(RK)*((SK)-(VK))*((SS)-(VK)) )*(SS)) / ((SK)-(SS)))
 
 __device__
-void calc_flux_hllc(
-        Real
-rl,
-Real pl, Real
-ul,
-Real vl, Real
-wl,
-Real rr, Real
-pr,
-Real ur, Real
-vr,
-Real wr,
-        Real
-&qr,
-Real &qu, Real
-&qv,
-Real &qw, Real
-&qe) {
-Real sl, sr, p_star, s_star, p_pvrs, _ql, _qr, tmp, e_tot_l, e_tot_r, czl, czr;
+void calc_flux_hllc(Real rl, Real pl, Real ul, Real vl, Real wl,
+                    Real rr, Real pr, Real ur, Real vr, Real wr,
+                    Real &qr, Real &qu, Real &qv, Real &qw, Real &qe) {
 
-e_tot_l = pl / rl / (GAM - 1.) + 0.5 * (ul * ul + vl * vl + wl * wl);
-e_tot_r = pr / rr / (GAM - 1.) + 0.5 * (ur * ur + vr * vr + wr * wr);
+    Real sl, sr, p_star, s_star, p_pvrs, _ql, _qr, tmp, e_tot_l, e_tot_r, czl, czr;
 
-czl = sqrt(GAM * pl / rl);
-czr = sqrt(GAM * pr / rr);
+    e_tot_l = pl / rl / (GAM - 1.) + 0.5 * (ul * ul + vl * vl + wl * wl);
+    e_tot_r = pr / rr / (GAM - 1.) + 0.5 * (ur * ur + vr * vr + wr * wr);
 
-p_pvrs = 0.5 * (pl + pr) - 0.5 * (ur - ul) * 0.25 * (rl + rr) * (czl + czr);
-p_star = (p_pvrs > 0.) ? p_pvrs : 0.;
+    czl = sqrt(GAM * pl / rl);
+    czr = sqrt(GAM * pr / rr);
 
-_ql = (p_star <= pl) ? 1 : sqrt(1. + (GAM + 1.) * (p_star / pl - 1.) / (2. * GAM));
-_qr = (p_star <= pr) ? 1 : sqrt(1. + (GAM + 1.) * (p_star / pr - 1.) / (2. * GAM));
+    p_pvrs = 0.5 * (pl + pr) - 0.5 * (ur - ul) * 0.25 * (rl + rr) * (czl + czr);
+    p_star = (p_pvrs > 0.) ? p_pvrs : 0.;
 
-sl = ul - czl * _ql;
-sr = ur + czr * _qr;
+    _ql = (p_star <= pl) ? 1 : sqrt(1. + (GAM + 1.) * (p_star / pl - 1.) / (2. * GAM));
+    _qr = (p_star <= pr) ? 1 : sqrt(1. + (GAM + 1.) * (p_star / pr - 1.) / (2. * GAM));
 
-if (sl > sr) {
-tmp = sl;
-sl = sr;
-sr = tmp;
-}
+    sl = ul - czl * _ql;
+    sr = ur + czr * _qr;
 
-s_star = pr - pl;
-s_star +=
-rl *ul
-* (sl - ul);
-s_star -=
-rr *ur
-* (sr - ur);
-s_star /= (
-rl *(sl
-- ul) -
-rr *(sr
-- ur));
+    if (sl > sr) {
+        tmp = sl;
+        sl = sr;
+        sr = tmp;
+    }
 
-if (s_star<sl)
-s_star = sl;
-if (s_star > sr)
-s_star = sr;
+    s_star = pr - pl;
+    s_star += rl * ul * (sl - ul);
+    s_star -= rr * ur * (sr - ur);
+    s_star /= (rl * (sl - ul) - rr * (sr - ur));
+
+    if (s_star < sl)
+        s_star = sl;
+    if (s_star > sr)
+        s_star = sr;
 
 
-if (!((sl <= s_star) && (s_star <= sr))) {
-//        amrex::Print() << "HLLC: inequality SL <= S* <= SR is FALSE." << "\n";
-//        abort();
-return;
-}
+    if (!((sl <= s_star) && (s_star <= sr))) {
+        //        amrex::Print() << "HLLC: inequality SL <= S* <= SR is FALSE." << "\n";
+        //        abort();
+        return;
+    }
 
-if (sl >= 0.) {
-qr = rl * ul;
-qu = rl * ul * ul + pl;
-qv = rl * vl * ul;
-qw = rl * wl * ul;
-qe = (rl * e_tot_l + pl) * ul;
-} else if (sr <= 0.) {
-qr = rr * ur;
-qu = rr * ur * ur + pr;
-qv = rr * vr * ur;
-qw = rr * wr * ur;
-qe = (rr * e_tot_r + pr) * ur;
-} else {
-if (s_star >= 0) {
-qr = F_HLLC_V( /*  UK, FK, SK, SS, PK, RK, VK */
-        rl,
-        rl * ul,
-        sl, s_star, pl, rl, ul
-);
-qu = F_HLLC_U( /*  UK, FK, SK, SS, PK, RK, VK */
-        rl * ul,
-        rl * ul * ul + pl,
-        sl, s_star, pl, rl, ul
-);
-qv = F_HLLC_V( /*  UK, FK, SK, SS, PK, RK, VK */
-        rl * vl,
-        rl * ul * vl,
-        sl, s_star, pl, rl, ul
-);
-qw = F_HLLC_V( /*  UK, FK, SK, SS, PK, RK, VK */
-        rl * wl,
-        rl * ul * wl,
-        sl, s_star, pl, rl, ul
-);
-qe = F_HLLC_E( /*  UK, FK, SK, SS, PK, RK, VK */
-        rl * e_tot_l,
-        (rl * e_tot_l + pl) * ul,
-        sl, s_star, pl, rl, ul
-);
-} else {
-qr = F_HLLC_V( /*  UK, FK, SK, SS, PK, RK, VK */
-        rr,
-        rr * ur,
-        sr, s_star, pr, rr, ur
-);
-qu = F_HLLC_U( /*  UK, FK, SK, SS, PK, RK, VK */
-        rr * ur,
-        rr * ur * ur + pr,
-        sr, s_star, pr, rr, ur
-);
-qv = F_HLLC_V( /*  UK, FK, SK, SS, PK, RK, VK */
-        rr * vr,
-        rr * ur * vr,
-        sr, s_star, pr, rr, ur
-);
-qw = F_HLLC_V( /*  UK, FK, SK, SS, PK, RK, VK */
-        rr * wr,
-        rr * ur * wr,
-        sr, s_star, pr, rr, ur
-);
-qe = F_HLLC_E( /*  UK, FK, SK, SS, PK, RK, VK */
-        rr * e_tot_r,
-        (rr * e_tot_r + pr) * ur,
-        sr, s_star, pr, rr, ur
-);
-}
-}
+    if (sl >= 0.) {
+        qr = rl * ul;
+        qu = rl * ul * ul + pl;
+        qv = rl * vl * ul;
+        qw = rl * wl * ul;
+        qe = (rl * e_tot_l + pl) * ul;
+    } else if (sr <= 0.) {
+        qr = rr * ur;
+        qu = rr * ur * ur + pr;
+        qv = rr * vr * ur;
+        qw = rr * wr * ur;
+        qe = (rr * e_tot_r + pr) * ur;
+    } else {
+        if (s_star >= 0) {
+            qr = F_HLLC_V( /*  UK, FK, SK, SS, PK, RK, VK */
+                    rl,
+                    rl * ul,
+                    sl, s_star, pl, rl, ul
+            );
+            qu = F_HLLC_U( /*  UK, FK, SK, SS, PK, RK, VK */
+                    rl * ul,
+                    rl * ul * ul + pl,
+                    sl, s_star, pl, rl, ul
+            );
+            qv = F_HLLC_V( /*  UK, FK, SK, SS, PK, RK, VK */
+                    rl * vl,
+                    rl * ul * vl,
+                    sl, s_star, pl, rl, ul
+            );
+            qw = F_HLLC_V( /*  UK, FK, SK, SS, PK, RK, VK */
+                    rl * wl,
+                    rl * ul * wl,
+                    sl, s_star, pl, rl, ul
+            );
+            qe = F_HLLC_E( /*  UK, FK, SK, SS, PK, RK, VK */
+                    rl * e_tot_l,
+                    (rl * e_tot_l + pl) * ul,
+                    sl, s_star, pl, rl, ul
+            );
+        } else {
+            qr = F_HLLC_V( /*  UK, FK, SK, SS, PK, RK, VK */
+                    rr,
+                    rr * ur,
+                    sr, s_star, pr, rr, ur
+            );
+            qu = F_HLLC_U( /*  UK, FK, SK, SS, PK, RK, VK */
+                    rr * ur,
+                    rr * ur * ur + pr,
+                    sr, s_star, pr, rr, ur
+            );
+            qv = F_HLLC_V( /*  UK, FK, SK, SS, PK, RK, VK */
+                    rr * vr,
+                    rr * ur * vr,
+                    sr, s_star, pr, rr, ur
+            );
+            qw = F_HLLC_V( /*  UK, FK, SK, SS, PK, RK, VK */
+                    rr * wr,
+                    rr * ur * wr,
+                    sr, s_star, pr, rr, ur
+            );
+            qe = F_HLLC_E( /*  UK, FK, SK, SS, PK, RK, VK */
+                    rr * e_tot_r,
+                    (rr * e_tot_r + pr) * ur,
+                    sr, s_star, pr, rr, ur
+            );
+        }
+    }
 }
 
 
@@ -864,12 +855,8 @@ void save(data_t d) {
 }
 
 
-inline Real _max_(Real
-a,
-Real b
-) {
-return a > b ? a :
-b;
+inline Real _max_(Real a, Real b) {
+    return a > b ? a : b;
 }
 
 int main() {
